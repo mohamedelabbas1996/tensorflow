@@ -2202,6 +2202,24 @@ func.func @op_async_done(%arg0: tensor<16xf32>) -> tensor<16xf32> {
 
 // -----
 
+func.func @async_computation_variadic(%arg0: tensor<16xf32>) -> tensor<16xf32>
+  attributes {execution_thread = "main"} {
+  return %arg0 : tensor<16xf32>
+}
+
+func.func @op_async_update_variadic(%arg0: tensor<16xf32>, %arg1: tensor<16xf32>) -> tensor<16xf32> {
+  // expected-error@+1 {{failed to legalize operation 'mhlo.async_start' that was explicitly marked illegal}}
+  %0 = "mhlo.async_start"(%arg0) {
+    called_computation = @async_computation_variadic,
+    execution_thread = "main"
+  } : (tensor<16xf32>) -> !mhlo.async_bundle<tensor<16xf32>, tensor<16xf32>>
+  %1 = "mhlo.async_update"(%0, %arg1) : (!mhlo.async_bundle<tensor<16xf32>, tensor<16xf32>>, tensor<16xf32>) -> !mhlo.async_bundle<tensor<16xf32>, tensor<16xf32>>
+  %2 = "mhlo.async_done"(%1) : (!mhlo.async_bundle<tensor<16xf32>, tensor<16xf32>>) -> tensor<16xf32>
+  func.return %2 : tensor<16xf32>
+}
+
+// -----
+
 func.func @op_bitcast(%arg0: tensor<i32>) -> tensor<f32> {
   // expected-error@+1 {{failed to legalize operation 'mhlo.bitcast' that was explicitly marked illegal}}
   %0 = "mhlo.bitcast"(%arg0) : (tensor<i32>) -> tensor<f32>

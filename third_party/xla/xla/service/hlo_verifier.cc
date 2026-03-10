@@ -1910,11 +1910,16 @@ absl::Status CheckCallableInstructionThreadName(
 
 absl::Status ShapeVerifier::CheckAsyncOpComputationShapes(
     const HloInstruction* async_op, const Shape& async_shape) {
+  HloOpcode async_opcode = async_op->opcode();
+  DCHECK(async_opcode == HloOpcode::kAsyncStart ||
+         async_opcode == HloOpcode::kAsyncUpdate ||
+         async_opcode == HloOpcode::kAsyncDone);
+
   if (!async_shape.IsTuple() || async_shape.tuple_shapes().size() < 2) {
     return Internal(
         "The %s expects the async shape to be a tuple of at least two "
         "elements, found %s.",
-        HloOpcodeString(async_op->opcode()),
+        HloOpcodeString(async_opcode),
         async_shape.ToString(/*print_layout=*/true));
   }
 
@@ -1922,21 +1927,79 @@ absl::Status ShapeVerifier::CheckAsyncOpComputationShapes(
       async_op->async_wrapped_computation()->ComputeProgramShape();
   Shape param_shape = ShapeUtil::MakeTupleShape(computation_shape.parameters());
   if (!ShapesSame(async_shape.tuple_shapes(0), param_shape)) {
-    return Internal(
-        "The %s expects the async shape at index {0} to match async "
-        "computation parameter shape (%s vs %s).",
-        HloOpcodeString(async_op->opcode()),
-        async_shape.tuple_shapes(0).ToString(/*print_layout=*/true),
-        param_shape.ToString(/*print_layout=*/true));
+    const Shape& actual_param_shape = async_shape.tuple_shapes(0);
+
+    if (!actual_param_shape.IsTuple()) {
+      return Internal(
+          "The %s expects the async shape at index {0} to be a tuple, found "
+          "%s.",
+          HloOpcodeString(async_op->opcode()),
+          actual_param_shape.ToString(/*print_layout=*/true));
+    }
+
+    bool is_prefix = false;
+    if (actual_param_shape.tuple_shapes().size() <=
+        param_shape.tuple_shapes().size()) {
+      is_prefix = true;
+      for (int i = 0; i < actual_param_shape.tuple_shapes().size(); ++i) {
+        if (!ShapesSame(actual_param_shape.tuple_shapes(i),
+                        param_shape.tuple_shapes(i))) {
+          is_prefix = false;
+          break;
+        }
+      }
+    }
+
+    if (!is_prefix) {
+      // Allow late binding.
+      return Internal(
+          "The %s expects the async shape at index {0} to be a tuple with "
+          "shapes that match the prefix of the async computation parameter "
+          "shape (%s vs %s).",
+          HloOpcodeString(async_op->opcode()),
+          async_shape.tuple_shapes(0).ToString(/*print_layout=*/true),
+          param_shape.ToString(/*print_layout=*/true));
+    }
   }
-  if (!ShapesSame(async_shape.tuple_shapes(1), computation_shape.result())) {
-    return Internal(
-        "The %s expects the async shape at index {1} to match the async "
-        "computation root shape (%s vs %s).",
-        HloOpcodeString(async_op->opcode()),
-        async_shape.tuple_shapes(1).ToString(/*print_layout=*/true),
-        computation_shape.result().ToString(/*print_layout=*/true));
+
+  const Shape& async_result_shape = async_shape.tuple_shapes(1);
+  if (!ShapesSame(async_result_shape, computation_shape.result())) {
+    // late binding mode
+    bool allowed_late_binding = false;
+    if (async_result_shape.IsTuple()) {
+      if (async_result_shape.tuple_shapes().empty() &&
+          (async_op->opcode() == HloOpcode::kAsyncStart ||
+           async_op->opcode() == HloOpcode::kAsyncUpdate)) {
+        allowed_late_binding = true;
+      } else if (computation_shape.result().IsTuple()) {
+        if (async_result_shape.tuple_shapes().size() <=
+            computation_shape.result().tuple_shapes().size()) {
+          allowed_late_binding = true;
+          for (int i = 0; i < async_result_shape.tuple_shapes().size(); ++i) {
+            if (!ShapesSame(async_result_shape.tuple_shapes(i),
+                            computation_shape.result().tuple_shapes(i))) {
+              allowed_late_binding = false;
+              break;
+            }
+          }
+        }
+      } else if (async_result_shape.tuple_shapes().size() == 1 &&
+                 ShapesSame(async_result_shape.tuple_shapes(0),
+                            computation_shape.result())) {
+        allowed_late_binding = true;
+      }
+    }
+
+    if (!allowed_late_binding) {
+      return Internal(
+          "The %s expects the async shape at index {1} to match the async "
+          "computation root shape (%s vs %s).",
+          HloOpcodeString(async_op->opcode()),
+          async_shape.tuple_shapes(1).ToString(/*print_layout=*/true),
+          computation_shape.result().ToString(/*print_layout=*/true));
+    }
   }
+
   return absl::OkStatus();
 }
 
@@ -1990,29 +2053,161 @@ absl::Status ShapeVerifier::HandleAsyncStart(HloInstruction* async_start) {
 
 absl::Status ShapeVerifier::HandleAsyncUpdate(HloInstruction* async_update) {
   TF_RETURN_IF_ERROR(CheckAsyncOpComputationThreadName(async_update));
-  if (!ShapesSame(async_update->operand(0)->shape(), async_update->shape())) {
-    return Internal(
-        "The %s expects the shape of operand and output to match (%s vs %s).",
-        HloOpcodeString(async_update->opcode()),
-        async_update->operand(0)->shape().ToString(true),
-        async_update->shape().ToString(true));
-  }
   TF_RETURN_IF_ERROR(
       CheckAsyncOpComputationShapes(async_update, async_update->shape()));
+  if (async_update->operand_count() > 1) {
+    const Shape& prev_async_op_shape = async_update->operand(0)->shape();
+    const Shape& curr_async_update_shape = async_update->shape();
+    TF_RET_CHECK(prev_async_op_shape.IsTuple() &&
+                 prev_async_op_shape.tuple_shapes().size() >= 2);
+    TF_RET_CHECK(curr_async_update_shape.IsTuple() &&
+                 curr_async_update_shape.tuple_shapes().size() >= 2);
+
+    const Shape& prev_async_op_params_shape =
+        prev_async_op_shape.tuple_shapes(0);
+    const Shape& curr_async_update_params_shape =
+        curr_async_update_shape.tuple_shapes(0);
+
+    TF_RET_CHECK(prev_async_op_params_shape.IsTuple());
+    TF_RET_CHECK(curr_async_update_params_shape.IsTuple());
+
+    int expected_params_count =
+        prev_async_op_params_shape.tuple_shapes().size() +
+        async_update->operand_count() - 1;
+    if (curr_async_update_params_shape.tuple_shapes().size() !=
+        expected_params_count) {
+      return Internal(
+          "The %s expects the number of parameters in its shape to be %d, "
+          "found %d.",
+          HloOpcodeString(async_update->opcode()), expected_params_count,
+          curr_async_update_params_shape.tuple_shapes().size());
+    }
+
+    for (int i = 0; i < prev_async_op_params_shape.tuple_shapes().size(); ++i) {
+      if (!ShapesSame(curr_async_update_params_shape.tuple_shapes(i),
+                      prev_async_op_params_shape.tuple_shapes(i))) {
+        return Internal(
+            "The %s expects parameter %d in its shape to match operand 0's "
+            "parameter shape (%s vs %s).",
+            HloOpcodeString(async_update->opcode()), i,
+            curr_async_update_params_shape.tuple_shapes(i).ToString(true),
+            prev_async_op_params_shape.tuple_shapes(i).ToString(true));
+      }
+    }
+
+    for (int i = 1; i < async_update->operand_count(); ++i) {
+      int param_idx = prev_async_op_params_shape.tuple_shapes().size() + i - 1;
+      if (!ShapesSame(curr_async_update_params_shape.tuple_shapes(param_idx),
+                      async_update->operand(i)->shape())) {
+        return Internal(
+            "The %s expects parameter %d in its shape to match operand %d "
+            "shape (%s vs %s).",
+            HloOpcodeString(async_update->opcode()), param_idx, i,
+            curr_async_update_params_shape.tuple_shapes(param_idx).ToString(
+                true),
+            async_update->operand(i)->shape().ToString(true));
+      }
+    }
+  }
+
   return CheckAsyncOpOperand(async_update);
 }
 
 absl::Status ShapeVerifier::HandleAsyncDone(HloInstruction* async_done) {
   TF_RETURN_IF_ERROR(CheckAsyncOpComputationThreadName(async_done));
-  TF_RETURN_IF_ERROR(CheckAsyncOpComputationShapes(
-      async_done, async_done->operand(0)->shape()));
-  const Shape& root_shape = async_done->operand(0)->shape().tuple_shapes(1);
-  if (!ShapesSame(root_shape, async_done->shape())) {
+  if (!async_done->operand(0)->shape().IsTuple() ||
+      async_done->operand(0)->shape().tuple_shapes().size() < 2) {
     return Internal(
-        "The %s expects the shape of output to match the async shape at index "
-        "{1} (%s vs %s).",
+        "The %s expects the async shape to be a tuple of at least two "
+        "elements, found %s.",
         HloOpcodeString(async_done->opcode()),
-        async_done->shape().ToString(true), root_shape.ToString(true));
+        async_done->operand(0)->shape().ToString(/*print_layout=*/true));
+  }
+
+  ProgramShape computation_shape =
+      async_done->async_wrapped_computation()->ComputeProgramShape();
+  Shape param_shape = ShapeUtil::MakeTupleShape(computation_shape.parameters());
+  const Shape& state_param_shape =
+      async_done->operand(0)->shape().tuple_shapes(0);
+
+  if (!ShapesSame(state_param_shape, param_shape)) {
+    return Internal(
+        "The %s expects the async state parameter shape at index {0} to match "
+        "async computation parameter shape (%s vs %s).",
+        HloOpcodeString(async_done->opcode()),
+        state_param_shape.ToString(/*print_layout=*/true),
+        param_shape.ToString(/*print_layout=*/true));
+  }
+
+  if (!ShapesSame(async_done->shape(), computation_shape.result())) {
+    return Internal(
+        "async-done expects the shape of output to match the shape of ROOT of "
+        "called computation (%s vs %s).",
+        async_done->shape().ToString(true),
+        computation_shape.result().ToString(true));
+  }
+
+  const Shape& operand_output_shape =
+      async_done->operand(0)->shape().tuple_shapes(1);
+  bool all_outputs_bound = false;
+  if (ShapesSame(operand_output_shape, computation_shape.result())) {
+    all_outputs_bound = true;
+  } else if (operand_output_shape.IsTuple() &&
+             !computation_shape.result().IsTuple()) {
+    if (operand_output_shape.tuple_shapes().size() == 1 &&
+        ShapesSame(operand_output_shape.tuple_shapes(0),
+                   computation_shape.result())) {
+      all_outputs_bound = true;
+    }
+  }
+  if (!all_outputs_bound) {
+    return Internal(
+        "async-done expects all output buffers to be bound, but found %s vs %s",
+        operand_output_shape.ToString(true),
+        computation_shape.result().ToString(true));
+  }
+  const HloInstruction* current = async_done->operand(0);
+  std::vector<const HloInstruction*> chain;
+  while (current->opcode() == HloOpcode::kAsyncUpdate) {
+    chain.push_back(current);
+    current = current->operand(0);
+  }
+  TF_RET_CHECK(current->opcode() == HloOpcode::kAsyncStart);
+  chain.push_back(current);
+
+  std::reverse(chain.begin(), chain.end());
+
+  std::vector<const HloInstruction*> total_operands;
+  for (const HloInstruction* op : chain) {
+    if (op->opcode() == HloOpcode::kAsyncStart) {
+      total_operands.insert(total_operands.end(), op->operands().begin(),
+                            op->operands().end());
+    } else {
+      total_operands.insert(total_operands.end(), op->operands().begin() + 1,
+                            op->operands().end());
+    }
+  }
+
+  const HloComputation* called_comp = current->async_wrapped_computation();
+  TF_RET_CHECK(called_comp != nullptr);
+
+  if (total_operands.size() != called_comp->num_parameters()) {
+    return Internal(
+        "The total number of operands in async chain for %%%s does not "
+        "match the async computation parameter count (%d vs %d).",
+        async_done->name(), (int)total_operands.size(),
+        (int)called_comp->num_parameters());
+  }
+
+  for (int i = 0; i < total_operands.size(); ++i) {
+    if (!ShapesSame(total_operands[i]->shape(),
+                    called_comp->parameter_instruction(i)->shape())) {
+      return Internal(
+          "The operand %d in async chain for %%%s does not match the "
+          "async computation parameter shape (%s vs %s).",
+          i, async_done->name(), total_operands[i]->shape().ToString(),
+          called_comp->parameter_instruction(i)->shape().ToString());
+    }
   }
   return CheckAsyncOpOperand(async_done);
 }
@@ -2632,8 +2827,8 @@ absl::Status VerifySingleOperand(
     const std::vector<HloOpcode>& expected_operands) {
   TF_RET_CHECK(instruction->operands().size() == 1)
       << "The " << instruction->opcode()
-      << " instruction requires one consumer, found "
-      << instruction->users().size();
+      << " instruction requires one operand, found "
+      << instruction->operands().size();
 
   const HloInstruction* operand = instruction->operand(0);
   TF_RET_CHECK(absl::c_find(expected_operands, operand->opcode()) !=
@@ -2651,8 +2846,23 @@ absl::Status VerifySingleOperand(
 // Checks asynchronous instruction pairs.
 absl::Status VerifyAsynchronousInstructionPairs(const HloModule& module) {
   // CopyStart must have a single CopyDone user.
+  // is CopyStart an async op?
   for (const HloComputation* computation : module.computations()) {
     for (const HloInstruction* instruction : computation->instructions()) {
+      for (int i = 0; i < instruction->operand_count(); ++i) {
+        const HloInstruction* operand = instruction->operand(i);
+        if (operand->opcode() == HloOpcode::kAsyncStart ||
+            operand->opcode() == HloOpcode::kAsyncUpdate) {
+          if (i != 0 || (instruction->opcode() != HloOpcode::kAsyncUpdate &&
+                         instruction->opcode() != HloOpcode::kAsyncDone)) {
+            return Internal(
+                "Async instruction %s used as operand %d of %s. "
+                "Async instructions can only be used as the first operand of "
+                "async-update or async-done.",
+                operand->name(), i, instruction->name());
+          }
+        }
+      }
       switch (instruction->opcode()) {
         case HloOpcode::kAsyncStart: {
           TF_RETURN_IF_ERROR(VerifySingleUser(
@@ -2660,8 +2870,13 @@ absl::Status VerifyAsynchronousInstructionPairs(const HloModule& module) {
           break;
         }
         case HloOpcode::kAsyncUpdate: {
-          TF_RETURN_IF_ERROR(VerifySingleOperand(
-              instruction, {HloOpcode::kAsyncStart, HloOpcode::kAsyncUpdate}));
+          TF_RET_CHECK(!instruction->operands().empty());
+          const HloInstruction* operand = instruction->operand(0);
+          TF_RET_CHECK(operand->opcode() == HloOpcode::kAsyncStart ||
+                       operand->opcode() == HloOpcode::kAsyncUpdate)
+              << "The first operand of a " << instruction->opcode()
+              << " instruction needs to be AsyncStart or AsyncUpdate, found "
+              << operand->opcode();
           TF_RETURN_IF_ERROR(VerifySingleUser(
               instruction, {HloOpcode::kAsyncUpdate, HloOpcode::kAsyncDone}));
           break;
@@ -4146,6 +4361,8 @@ absl::StatusOr<bool> HloVerifier::RunImpl(
       // collection of send/recv instructions. This is needed to represent NCCL
       // groups on GPU.
       if (computation->IsAsyncComputation() &&
+          computation->execution_thread() ==
+              HloInstruction::kMainExecutionThread &&
           !computation->OnlyContainsSendRecv() &&
           !IsCollectivesGroupComputation(computation) &&
           !IsAsyncBarrierComputation(computation)) {

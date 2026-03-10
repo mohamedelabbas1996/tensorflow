@@ -2113,27 +2113,24 @@ HloInstruction* HloParserImpl::CreateInstruction(  // NOLINT
           return nullptr;
         }
       }
+      // TODO(phui): move these checks to the verifier
       // async-{update,done} expect their one singular operand to be the
       // previous async op.
       if (opcode == HloOpcode::kAsyncUpdate ||
           opcode == HloOpcode::kAsyncDone) {
-        if (operands.size() != 1 || !operands[0]->IsAsynchronous() ||
+        if (operands.empty() || !operands[0]->IsAsynchronous() ||
             operands[0]->opcode() == HloOpcode::kAsyncDone) {
           TokenError(
-              "AsyncUpdate and AsyncDone expect a single async op as their "
-              "operand.");
+              "AsyncUpdate and AsyncDone expect a single AsyncStart or "
+              "AsyncUpdate op as their first operand.");
           return nullptr;
         }
       }
-      // For AsyncUpdate, the operand and the result should have the same shape.
-      if (opcode == HloOpcode::kAsyncUpdate) {
-        if (operands[0]->shape() != *shape) {
-          TokenError(
-              "AsyncUpdate expects the op shape to be the same as the operand "
-              "shape.");
-          return nullptr;
-        }
+      if (opcode == HloOpcode::kAsyncDone && operands.size() != 1) {
+        TokenError("AsyncDone expects exactly one operand");
+        return nullptr;
       }
+
       optional<std::string> async_execution_thread;
       attrs["async_execution_thread"] = {/*required=*/false, AttrTy::kString,
                                          &async_execution_thread};
@@ -2238,7 +2235,7 @@ HloInstruction* HloParserImpl::CreateInstruction(  // NOLINT
       }
       if (opcode == HloOpcode::kAsyncUpdate) {
         return builder->AddInstruction(
-            HloInstruction::CreateAsyncUpdate(*shape, operands[0]));
+            HloInstruction::CreateAsyncUpdate(*shape, operands));
       }
       return builder->AddInstruction(
           HloInstruction::CreateAsyncDone(*shape, operands[0]));

@@ -480,6 +480,17 @@ func.func @async_ops_with_token(%token: !stablehlo.token) -> (tensor<3x4xi32>, !
   return %1, %2 : tensor<3x4xi32>, !stablehlo.token
 }
 
+// CHECK-LABEL: "async_update_ops_with_token"
+func.func @async_update_ops_with_token(%token: !stablehlo.token, %arg0: tensor<16xf32>) -> (tensor<3x4xi32>, !stablehlo.token) {
+  // CHECK: mhlo.async_start{{.*}} !mhlo.async_bundle<!mhlo.token, tuple<tensor<3x4xi32>, !mhlo.token>, tensor<i32>>
+  %0 = "mhlo.async_start"(%token) {called_computation = @recv, execution_thread = "main"} : (!stablehlo.token) -> !mhlo.async_bundle<!stablehlo.token, tuple<tensor<3x4xi32>, !stablehlo.token>, tensor<i32>>
+  // CHECK: mhlo.async_update{{.*}} !mhlo.async_bundle<!mhlo.token, tuple<tensor<3x4xi32>, !mhlo.token>, tensor<i32>>
+  %1 = "mhlo.async_update"(%0, %arg0) : (!mhlo.async_bundle<!stablehlo.token, tuple<tensor<3x4xi32>, !stablehlo.token>, tensor<i32>>, tensor<16xf32>) -> !mhlo.async_bundle<!stablehlo.token, tuple<tensor<3x4xi32>, !stablehlo.token>, tensor<i32>>
+  // CHECK: mhlo.async_done{{.*}} -> (tensor<3x4xi32>, !mhlo.token)
+  %2, %3 = "mhlo.async_done"(%1) : (!mhlo.async_bundle<!stablehlo.token, tuple<tensor<3x4xi32>, !stablehlo.token>, tensor<i32>>) -> (tensor<3x4xi32>, !stablehlo.token)
+  return %2, %3 : tensor<3x4xi32>, !stablehlo.token
+}
+
 // -----
 
 // CHECK-LABEL: "op_after_all"
