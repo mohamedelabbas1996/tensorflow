@@ -497,9 +497,9 @@ LogicalResult AsyncStartOp::verify() {
 }
 
 LogicalResult AsyncUpdateOp::verify() {
-  if (!isa<AsyncStartOp, AsyncUpdateOp>(getOperand().getDefiningOp())) {
+  if (!isa<AsyncStartOp, AsyncUpdateOp>(getOperand(0).getDefiningOp())) {
     return emitOpError()
-           << "operand must be defined by async-start or async-update op";
+           << "operand 0 must be defined by async-start or async-update op";
   }
 
   AsyncStartOp startOp = findAsyncChainStart(*this);

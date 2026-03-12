@@ -114,9 +114,11 @@ struct HloLegalizeToStablehloPass
           mhlo::AtanhOp, mhlo::CoshOp, mhlo::ErfOp, mhlo::RaggedDotOp,
           mhlo::ScanOp, mhlo::SinhOp, mhlo::TopKOp>();
 
-      // These ops do not exist in StableHLO. (They don't exist in CHLO, either;
-      // MHLO is the appropriate dialect for expressing XLA-specific features
-      // such as these.)
+      // TODO(phui): update this part: asyncstart/asyncupdate/async-done are
+      // defined in stablehlo.
+      // These ops do not exist in StableHLO. (They don't
+      // exist in CHLO, either; MHLO is the appropriate dialect for expressing
+      // XLA-specific features such as these.)
       target.addLegalOp<
           mhlo::AsyncDoneOp, mhlo::AsyncStartOp, mhlo::AsyncUpdateOp,
           mhlo::BitcastOp, mhlo::CopyOp, mhlo::DomainOp, mhlo::FusionOp,

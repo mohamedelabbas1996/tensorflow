@@ -251,6 +251,93 @@ AliasInfo::GetInPlaceInputOutputPairs(const HloInstruction* user) const {
     }
     return in_place_pairs;
   }
+  if (user->opcode() == HloOpcode::kAsyncUpdate ||
+      user->opcode() == HloOpcode::kAsyncDone) {
+    std::vector<std::pair<HloOperandIndex, ShapeIndex>> in_place_pairs;
+    // AsyncUpdate/AsyncDone always alias their chain operand if shapes match.
+    // Index {0} is the context/chain.
+    if (user->shape().IsTuple() && user->shape().tuple_shapes_size() > 0 &&
+        user->operand(0)->shape().IsTuple() &&
+        user->operand(0)->shape().tuple_shapes_size() > 0) {
+      int64_t num_prev_params =
+          user->operand(0)->shape().tuple_shapes(0).tuple_shapes_size();
+      int64_t num_curr_params =
+          user->shape().tuple_shapes(0).tuple_shapes_size();
+
+      // 1. Alias prefix from operand(0) {0, i} -> output {0, i}
+      for (int64_t i = 0; i < std::min(num_prev_params, num_curr_params); ++i) {
+        ShapeUtil::ForEachLeafShape(
+            user->shape().tuple_shapes(0).tuple_shapes(i),
+            [&](const Shape& subshape, const ShapeIndex& index) {
+              ShapeIndex full_index = {0, i};
+              full_index.insert(full_index.end(), index.begin(), index.end());
+              in_place_pairs.push_back(
+                  {HloOperandIndex{0, full_index}, full_index});
+            });
+      }
+
+      // 2. Alias newly bound operands i -> output {0, i}
+      for (int64_t i = num_prev_params; i < num_curr_params; ++i) {
+        int64_t operand_idx = i - num_prev_params + 1;
+        if (operand_idx < user->operand_count()) {
+          ShapeUtil::ForEachLeafShape(
+              user->operand(operand_idx)->shape(),
+              [&](const Shape& subshape, const ShapeIndex& index) {
+                ShapeIndex full_output_index = {0, i};
+                full_output_index.insert(full_output_index.end(), index.begin(),
+                                         index.end());
+                in_place_pairs.push_back(
+                    {HloOperandIndex{operand_idx, index}, full_output_index});
+              });
+        }
+      }
+    }
+    if (user->opcode() == HloOpcode::kAsyncDone) {
+      // AsyncDone output aliases the result produced in the async computation.
+      // In the context tuple (from operand 0), the result is index {1}.
+      if (!user->shape().IsTuple()) {
+        in_place_pairs.push_back({HloOperandIndex{0, {1}}, {}});
+      } else if (user->shape().tuple_shapes_size() > 0) {
+        // If AsyncDone output is a tuple (e.g. (Result, Context)), Result is
+        // {0}.
+        ShapeUtil::ForEachLeafShape(
+            user->shape().tuple_shapes(0),
+            [&](const Shape& subshape, const ShapeIndex& index) {
+              ShapeIndex operand_index = {1};
+              operand_index.insert(operand_index.end(), index.begin(),
+                                   index.end());
+              ShapeIndex output_index = {0};
+              output_index.insert(output_index.end(), index.begin(),
+                                  index.end());
+              in_place_pairs.push_back(
+                  {HloOperandIndex{0, operand_index}, output_index});
+            });
+      }
+    } else {
+      // AsyncUpdate late operands alias with their respective parameter slots.
+      const HloAsyncInstruction* async_start =
+          Cast<HloAsyncInstruction>(user)->async_chain_start();
+      int64_t num_prev_params = async_start->operand_count();
+      if (user->shape().IsTuple() && user->shape().tuple_shapes_size() > 0 &&
+          user->shape().tuple_shapes(0).IsTuple()) {
+        for (int64_t i = 1; i < user->operand_count(); ++i) {
+          int64_t param_idx = num_prev_params + i - 1;
+          if (param_idx < user->shape().tuple_shapes(0).tuple_shapes_size()) {
+            ShapeUtil::ForEachLeafShape(
+                user->operand(i)->shape(),
+                [&](const Shape& subshape, const ShapeIndex& index) {
+                  ShapeIndex full_output_index = {0, param_idx};
+                  full_output_index.insert(full_output_index.end(),
+                                           index.begin(), index.end());
+                  in_place_pairs.push_back(
+                      {HloOperandIndex{i, index}, full_output_index});
+                });
+          }
+        }
+      }
+    }
+    return in_place_pairs;
+  }
   if (user->opcode() == HloOpcode::kSetDimensionSize) {
     int64_t dimension = user->dimension();
     std::vector<std::pair<HloOperandIndex, ShapeIndex>> in_place_pairs;

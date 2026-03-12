@@ -437,6 +437,8 @@ class HloInstruction {
       absl::string_view async_execution_thread = kMainExecutionThread);
   static std::unique_ptr<HloInstruction> CreateAsyncUpdate(
       const Shape& shape, HloInstruction* operand);
+  static std::unique_ptr<HloInstruction> CreateAsyncUpdate(
+      const Shape& shape, absl::Span<HloInstruction* const> operands);
   static std::unique_ptr<HloInstruction> CreateAsyncDone(
       const Shape& shape, HloInstruction* operand);
 

@@ -5682,8 +5682,8 @@ async_computation {
 ENTRY AsyncStartMissingOperandWrapper {
   p0 = f32[2,3] parameter(0)
   async-start = (f32[2,3], f32[3,2], s32[]) async-start(p0), calls=async_computation
-  async-update = ((f32[2,3]), f32[3,2], s32[]) async-update(async-start), calls=async_computation
-  ROOT async-done = f32[3,2] async-done(async-update), calls=async_computation
+  async-update = ((f32[2,3]), f32[3,2], s32[]) async-update(async-start)
+  ROOT async-done = f32[3,2] async-done(async-update)
 }
   )";
   EXPECT_THAT(
@@ -5694,28 +5694,7 @@ ENTRY AsyncStartMissingOperandWrapper {
                     "((async-operands), async-outputs, state).")));
 }
 
-TEST_F(HloParserTest, AsyncUpdateMissingOperandWrapper) {
-  const char* const hlo_string = R"(
-HloModule Module
 
-async_computation {
-  p = f32[2,3] parameter(0)
-  ROOT custom-call = f32[3,2] custom-call(p), custom_call_target="foo"
-}
-
-ENTRY AsyncUpdateMissingOperandWrapper {
-  p0 = f32[2,3] parameter(0)
-  async-start = ((f32[2,3]), f32[3,2], s32[]) async-start(p0), calls=async_computation
-  async-update = (f32[2,3], f32[3,2], s32[]) async-update(async-start), calls=async_computation
-  ROOT async-done = f32[3,2] async-done(async-update), calls=async_computation
-}
-  )";
-  EXPECT_THAT(
-      ParseAndReturnUnverifiedModule(hlo_string).status(),
-      absl_testing::StatusIs(tsl::error::INVALID_ARGUMENT,
-                             HasSubstr("AsyncUpdate expects the op shape to be "
-                                       "the same as the operand shape.")));
-}
 
 TEST_F(HloParserTest, AsyncOpTupleWrongType) {
   const char* const hlo_string = R"(
@@ -5753,16 +5732,17 @@ ENTRY AsyncStartAndAsyncDone {
   )";
   EXPECT_THAT(
       ParseAndReturnUnverifiedModule(hlo_string).status(),
-      absl_testing::StatusIs(tsl::error::INVALID_ARGUMENT,
-                             HasSubstr("AsyncUpdate and AsyncDone expect a "
-                                       "single async op as their operand.")));
+      absl_testing::StatusIs(
+          tsl::error::INVALID_ARGUMENT,
+          HasSubstr("AsyncUpdate and AsyncDone expect a single AsyncStart or "
+                    "AsyncUpdate op as their first operand.")));
 }
 
 TEST_F(HloParserTest, AsyncUpdateAndAsyncDoneNoAsyncStart) {
   const char* const hlo_string = R"(
 HloModule Module
 
-ENTRY AsyncStartAndAsyncDone {
+ENTRY AsyncStartAndAsyncDone {  
   p0 = f32[2,3] parameter(0)
   p1 = u32[] parameter(1)
   tuple = ((f32[2,3]), f32[2,3], u32[]) tuple(p0, p0, p1)
@@ -5772,9 +5752,56 @@ ENTRY AsyncStartAndAsyncDone {
   )";
   EXPECT_THAT(
       ParseAndReturnUnverifiedModule(hlo_string).status(),
-      absl_testing::StatusIs(tsl::error::INVALID_ARGUMENT,
-                             HasSubstr("AsyncUpdate and AsyncDone expect a "
-                                       "single async op as their operand.")));
+      absl_testing::StatusIs(
+          tsl::error::INVALID_ARGUMENT,
+          HasSubstr("AsyncUpdate and AsyncDone expect a single AsyncStart or "
+                    "AsyncUpdate op as their first operand.")));
+}
+
+TEST_F(HloParserTest, AsyncUpdateZeroOperandsRejected) {
+  const char* const hlo_string = R"(
+HloModule Module
+
+async_computation {
+  p0 = f32[2,3] parameter(0)
+  ROOT custom-call = f32[3,2] custom-call(p0), custom_call_target="foo"
+}
+
+ENTRY AsyncUpdateZeroOperandsRejected {
+  p0 = f32[2,3] parameter(0)
+  async-start = ((f32[2,3]), f32[3,2], s32[]) async-start(p0), calls=async_computation
+  ROOT async-update = ((f32[2,3]), f32[3,2], s32[]) async-update()
+}
+  )";
+  EXPECT_THAT(
+      ParseAndReturnUnverifiedModule(hlo_string).status(),
+      absl_testing::StatusIs(
+          tsl::error::INVALID_ARGUMENT,
+          HasSubstr("AsyncUpdate and AsyncDone expect a single AsyncStart or "
+                    "AsyncUpdate op as their first operand.")));
+}
+
+TEST_F(HloParserTest, AsyncDoneZeroOperandsRejected) {
+  const char* const hlo_string = R"(
+HloModule Module
+
+async_computation {
+  p0 = f32[2,3] parameter(0)
+  ROOT custom-call = f32[3,2] custom-call(p0), custom_call_target="foo"
+}
+
+ENTRY AsyncDoneZeroOperandsRejected {
+  p0 = f32[2,3] parameter(0)
+  async-start = ((f32[2,3]), f32[3,2], s32[]) async-start(p0), calls=async_computation
+  ROOT async-done = f32[3,2] async-done()
+}
+  )";
+  EXPECT_THAT(
+      ParseAndReturnUnverifiedModule(hlo_string).status(),
+      absl_testing::StatusIs(
+          tsl::error::INVALID_ARGUMENT,
+          HasSubstr("AsyncUpdate and AsyncDone expect a single AsyncStart or "
+                    "AsyncUpdate op as their first operand.")));
 }
 
 TEST_F(HloParserTest, AsyncUpdateWithSyntaxSugarWrongOp) {
@@ -6374,6 +6401,290 @@ TEST_F(HloParserTest, SparsityConfig_Both) {
   EXPECT_EQ(config.rhs().num_non_zero(), 3);
   EXPECT_EQ(config.rhs().dimension(), 0);
   EXPECT_EQ(config.rhs().stride(), 1);
+}
+
+TEST_F(HloParserTest, AsyncStartWithZeroOperands) {
+  const char* const hlo_string = R"(
+HloModule main
+
+async_computation {
+  arg.0 = f32[2,3] parameter(0)
+  arg.1 = f32[2,3] parameter(1)
+  ROOT add = f32[2,3] add(arg.0, arg.1)
+}
+
+ENTRY main {
+  ROOT async-start = ((), f32[3,2], s32[]) async-start(), calls=async_computation
+}
+  )";
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnUnverifiedModule(hlo_string));
+  auto async_start = module->entry_computation()->root_instruction();
+  EXPECT_EQ(async_start->operand_count(), 0);
+  EXPECT_EQ(async_start->opcode(), HloOpcode::kAsyncStart);
+}
+
+TEST_F(HloParserTest, AsyncStartWithOneOperand) {
+  const char* const hlo_string = R"(
+HloModule main
+
+async_computation {
+  arg.0 = f32[2,3] parameter(0)
+  arg.1 = f32[2,3] parameter(1)
+  ROOT add = f32[2,3] add(arg.0, arg.1)
+}
+
+ENTRY main {
+  arg = f32[2,3] parameter(0)
+  ROOT async-start = ((f32[2,3]), f32[3,2], s32[]) async-start(arg), calls=async_computation
+}
+  )";
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnUnverifiedModule(hlo_string));
+  auto async_start = module->entry_computation()->root_instruction();
+  EXPECT_EQ(async_start->operand_count(), 1);
+  EXPECT_EQ(async_start->opcode(), HloOpcode::kAsyncStart);
+}
+
+TEST_F(HloParserTest, AsyncStartWithTwoOperands) {
+  const char* const hlo_string = R"(
+HloModule main
+
+async_computation {
+  arg.0 = f32[2,3] parameter(0)
+  arg.1 = f32[2,3] parameter(1)
+  ROOT add = f32[2,3] add(arg.0, arg.1)
+}
+
+ENTRY main {
+  arg.0 = f32[2,3] parameter(0)
+  arg.1 = f32[2,3] parameter(1)
+  ROOT async-start = ((f32[2,3], f32[2,3]), f32[3,2], s32[]) async-start(arg.0, arg.1), calls=async_computation
+}
+  )";
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnUnverifiedModule(hlo_string));
+  auto async_start = module->entry_computation()->root_instruction();
+  EXPECT_EQ(async_start->operand_count(), 2);
+  EXPECT_EQ(async_start->opcode(), HloOpcode::kAsyncStart);
+  EXPECT_EQ(async_start->operand(0)->opcode(), HloOpcode::kParameter);
+  EXPECT_EQ(async_start->operand(1)->opcode(), HloOpcode::kParameter);
+}
+
+TEST_F(HloParserTest, AsyncStartWithThreeOperands) {
+  const char* const hlo_string = R"(
+HloModule main
+
+async_computation {
+  arg.0 = f32[2,3] parameter(0)
+  arg.1 = f32[2,3] parameter(1)
+  ROOT add = f32[2,3] add(arg.0, arg.1)
+}
+
+ENTRY main {
+  arg.0 = f32[2,3] parameter(0)
+  arg.1 = f32[2,3] parameter(1)
+  arg.2 = f32[2,3] parameter(2)
+  // this could be parsed, but not verified
+  ROOT async-start = ((f32[2,3], f32[2,3], f32[2,3]), f32[3,2], s32[]) async-start(arg.0, arg.1, arg.2), calls=async_computation
+}
+  )";
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnUnverifiedModule(hlo_string));
+  auto async_start = module->entry_computation()->root_instruction();
+  EXPECT_EQ(async_start->operand_count(), 3);
+  EXPECT_EQ(async_start->opcode(), HloOpcode::kAsyncStart);
+  EXPECT_EQ(async_start->operand(0)->opcode(), HloOpcode::kParameter);
+  EXPECT_EQ(async_start->operand(1)->opcode(), HloOpcode::kParameter);
+  EXPECT_EQ(async_start->operand(2)->opcode(), HloOpcode::kParameter);
+}
+
+TEST_F(HloParserTest, AsyncUpdate_BindZeroOperands) {
+  const char* const hlo_string = R"(
+HloModule Module
+
+async_computation {
+  p0 = f32[2,3] parameter(0)
+  p1 = f32[2,3] parameter(1)
+  ROOT custom-call = f32[3,2] custom-call(p0), custom_call_target="foo"
+}
+
+ENTRY AsyncUpdateVariadic {
+  p0 = f32[2,3] parameter(0)
+  p1 = f32[2,3] parameter(1)
+  async-start = ((f32[2,3], f32[2,3]), f32[3,2], s32[]) async-start(p0, p1), calls=async_computation
+  async-update = ((f32[2,3], f32[2,3]), f32[3,2], s32[]) async-update(async-start)
+  ROOT async-done = f32[3,2] async-done(async-update)
+}
+  )";
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto async_done = module->entry_computation()->root_instruction();
+  auto async_update = async_done->operand(0);
+  EXPECT_EQ(async_update->operand_count(), 1);
+  EXPECT_EQ(async_update->operand(0)->opcode(), HloOpcode::kAsyncStart);
+}
+
+TEST_F(HloParserTest, AsyncUpdate_BindOutputBuffer) {
+  const char* const hlo_string = R"(
+HloModule Module
+
+async_computation {
+  p0 = f32[2,3] parameter(0)
+  p1 = f32[2,3] parameter(1)
+  ROOT custom-call = f32[3,2] custom-call(p0), custom_call_target="foo"
+}
+
+ENTRY AsyncUpdateVariadic {
+  p0 = f32[2,3] parameter(0)
+  p1 = f32[2,3] parameter(1)
+  async-start = ((f32[2,3], f32[2,3]), (), s32[]) async-start(p0, p1), calls=async_computation
+  async-update = ((f32[2,3], f32[2,3]), (f32[3,2]), s32[]) async-update(async-start)
+  ROOT async-done = f32[3,2] async-done(async-update)
+}
+  )";
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto async_done = module->entry_computation()->root_instruction();
+  auto async_update = async_done->operand(0);
+  EXPECT_EQ(async_update->operand_count(), 1);
+  EXPECT_EQ(async_update->operand(0)->opcode(), HloOpcode::kAsyncStart);
+}
+
+TEST_F(HloParserTest, AsyncUpdate_ZeroOperands_1_by_1) {
+  const char* const hlo_string = R"(
+HloModule Module
+
+async_computation {
+  p0 = f32[2,3] parameter(0)
+  p1 = f32[2,3] parameter(1)
+  ROOT custom-call = f32[3,2] custom-call(p0), custom_call_target="foo"
+}
+
+ENTRY AsyncUpdateVariadic {
+  p0 = f32[2,3] parameter(0)
+  p1 = f32[2,3] parameter(1)
+  async-start = ((), f32[3,2], s32[]) async-start(), calls=async_computation
+  async-update = ((f32[2,3]), f32[3,2], s32[]) async-update(async-start, p0)
+  async-update-2 = ((f32[2,3], f32[2,3]), f32[3,2], s32[]) async-update(async-update, p1)
+  ROOT async-done = f32[3,2] async-done(async-update-2)
+}
+  )";
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto async_done = module->entry_computation()->root_instruction();
+  auto async_update_2 = async_done->operand(0);
+  EXPECT_EQ(async_update_2->operand_count(), 2);
+  EXPECT_EQ(async_update_2->operand(0)->opcode(), HloOpcode::kAsyncUpdate);
+  EXPECT_EQ(async_update_2->operand(1)->opcode(), HloOpcode::kParameter);
+}
+
+TEST_F(HloParserTest, AsyncStart_PrefixOperands_AsyncUpdate_ByTwo) {
+  const char* const hlo_string = R"(
+HloModule Module
+
+async_computation {
+  p0 = f32[2,3] parameter(0)
+  p1 = f32[2,3] parameter(1)
+  ROOT custom-call = f32[3,2] custom-call(p0), custom_call_target="foo"
+}
+
+ENTRY AsyncUpdateVariadic {
+  p0 = f32[2,3] parameter(0)
+  p1 = f32[2,3] parameter(1)
+  async-start = ((), f32[3,2], s32[]) async-start(), calls=async_computation
+  async-update = ((f32[2,3], f32[2,3]), f32[3,2], s32[]) async-update(async-start, p0, p1)
+  ROOT async-done = f32[3,2] async-done(async-update)
+}
+  )";
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto async_done = module->entry_computation()->root_instruction();
+  auto async_update = async_done->operand(0);
+  EXPECT_EQ(async_update->operand_count(), 3);
+  EXPECT_EQ(async_update->operand(0)->opcode(), HloOpcode::kAsyncStart);
+  EXPECT_EQ(async_update->operand(1)->opcode(), HloOpcode::kParameter);
+  EXPECT_EQ(async_update->operand(2)->opcode(), HloOpcode::kParameter);
+}
+
+TEST_F(HloParserTest, AsyncUpdateVariadic) {
+  const char* const hlo_string = R"(
+HloModule Module
+
+async_computation {
+  p0 = f32[2,3] parameter(0)
+  p1 = f32[2,3] parameter(1)
+  ROOT custom-call = f32[3,2] custom-call(p0), custom_call_target="foo"
+}
+
+ENTRY AsyncUpdateVariadic {
+  p0 = f32[2,3] parameter(0)
+  p1 = f32[2,3] parameter(1)
+  async-start = ((f32[2,3]), f32[3,2], s32[]) async-start(p0), calls=async_computation
+  async-update = ((f32[2,3]), f32[3,2], s32[]) async-update(async-start, p1)
+  ROOT async-done = f32[3,2] async-done(async-update)
+}
+  )";
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto async_done = module->entry_computation()->root_instruction();
+  auto async_update = async_done->operand(0);
+  EXPECT_EQ(async_update->operand_count(), 2);
+  EXPECT_EQ(async_update->operand(1)->opcode(), HloOpcode::kParameter);
+}
+
+TEST_F(HloParserTest, AsyncStartPrefixOperandsOk) {
+  const char* const hlo_string = R"(
+HloModule Module
+
+async_computation {
+  p0 = f32[2,3] parameter(0)
+  p1 = f32[2,3] parameter(1)
+  ROOT custom-call = f32[3,2] custom-call(p0), custom_call_target="foo"
+}
+
+ENTRY AsyncStartPrefixOperandsOk {
+  p0 = f32[2,3] parameter(0)
+  ROOT async-start = ((f32[2,3]), f32[3,2], s32[]) async-start(p0), calls=async_computation
+}
+  )";
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnUnverifiedModule(hlo_string));
+}
+
+TEST_F(HloParserTest, AsyncOpsVariadicParserFlexibility) {
+  const char* const hlo_string = R"(
+HloModule Module
+
+async_computation.1 {
+  p0 = f32[2,3] parameter(0)
+  p1 = f32[2,3] parameter(1)
+  p2 = f32[2,3] parameter(2)
+  ROOT custom-call = f32[3,2] custom-call(p0), custom_call_target="foo"
+}
+
+async_computation.2 {
+  p0 = f32[2,3] parameter(0)
+  ROOT custom-call = f32[3,2] custom-call(p0), custom_call_target="foo"
+}
+
+ENTRY Entry {
+  p0 = f32[2,3] parameter(0)
+  p1 = f32[2,3] parameter(1)
+  p2 = f32[2,3] parameter(2)
+  
+  // Chain 1: Test async-start with operands and various async-update cases
+  async-start.1 = ((f32[2,3]), f32[3,2], s32[]) async-start(p0), calls=async_computation.1
+  // Case 1: async-update with 1 operand
+  async-update.1a = ((f32[2,3]), f32[3,2], s32[]) async-update(async-start.1, p1)
+  // Case 2: async-update with multiple operands
+  async-update.1b = ((f32[2,3]), f32[3,2], s32[]) async-update(async-update.1a, p2, p0)
+  // Case 3: async-update with no additional operands
+  async-update.1c = ((f32[2,3]), f32[3,2], s32[]) async-update(async-update.1b)
+
+  // Chain 2: Test async-start with zero operands
+  // This should be accepted by parser, but rejected by verifier
+  async-start.2 = ((f32[2,3]), f32[3,2], s32[]) async-start(), calls=async_computation.2
+  
+  ROOT tuple = tuple(async-update.1c, async-start.2)
+}
+  )";
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnUnverifiedModule(hlo_string));
 }
 
 }  // namespace
