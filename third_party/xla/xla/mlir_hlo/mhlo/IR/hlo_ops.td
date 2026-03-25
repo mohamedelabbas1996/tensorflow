@@ -1471,7 +1471,7 @@ def MHLO_AsyncUpdateOp : MHLO_Op<"async_update", [DeclareOpInterfaceMethods<Infe
     See the documentation for AsyncStart for more information.
   }];
 
-  let arguments = (ins MHLO_AsyncBundle:$bundle);
+  let arguments = (ins MHLO_AsyncBundle:$bundle, Variadic<MHLO_TensorOrAnyTokenOrTuple>:$inputs);
 
   let results = (outs MHLO_AsyncBundle);
 

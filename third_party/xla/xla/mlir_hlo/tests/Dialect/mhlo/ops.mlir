@@ -6608,6 +6608,14 @@ func.func @async(%arg0: tensor<10x10xf32>) -> tensor<32xf32> {
   func.return %2 : tensor<32xf32>
 }
 
+// CHECK-LABEL: func @async_variadic
+func.func @async_variadic(%arg0: tensor<10x10xf32>, %arg1: tensor<32xf32>) -> tensor<32xf32> {
+  %0 = "mhlo.async_start"(%arg0) {called_computation=@async_op, execution_thread="thread"} : (tensor<10x10xf32>) -> !mhlo.async_bundle<tensor<10x10xf32>, tensor<32xf32>, tensor<i32>>
+  %1 = "mhlo.async_update"(%0, %arg1) : (!mhlo.async_bundle<tensor<10x10xf32>, tensor<32xf32>, tensor<i32>>, tensor<32xf32>) -> !mhlo.async_bundle<tensor<10x10xf32>, tensor<32xf32>, tensor<i32>>
+  %2 = "mhlo.async_done"(%1) : (!mhlo.async_bundle<tensor<10x10xf32>, tensor<32xf32>, tensor<i32>>) -> tensor<32xf32>
+  func.return %2 : tensor<32xf32>
+}
+
 // -----
 
 func.func @async_op(%arg0: tensor<10x10xf32>) -> tensor<32xf32>
