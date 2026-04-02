@@ -28,6 +28,7 @@ limitations under the License.
 #include "nanobind/stl/string_view.h"  // IWYU pragma: keep
 #include "nanobind/stl/unique_ptr.h"  // IWYU pragma: keep
 #include "nanobind/stl/vector.h"  // IWYU pragma: keep
+#include "xla/backends/profiler/subprocess/subprocess_registry.h"
 #include "xla/backends/profiler/util/metadata_registry.h"
 #include "xla/pjrt/c/pjrt_c_api.h"
 #include "xla/pjrt/exceptions.h"
@@ -176,6 +177,18 @@ NB_MODULE(_profiler, m) {
         ") -> None"
           // clang-format on
           ));
+  m.def(
+      "register_subprocess",
+      [](int pid, int port) -> bool {
+        return xla::profiler::subprocess::RegisterSubprocess(pid, port).ok();
+      },
+      nb::arg("pid"), nb::arg("port"));
+  m.def(
+      "unregister_subprocess",
+      [](int pid) -> bool {
+        return xla::profiler::subprocess::UnregisterSubprocess(pid).ok();
+      },
+      nb::arg("pid"));
 
   nb::class_<ProfilerSessionWrapper> profiler_session_class(m,
                                                             "ProfilerSession");
