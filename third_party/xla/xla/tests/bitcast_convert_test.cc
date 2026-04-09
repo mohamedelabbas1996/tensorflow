@@ -202,9 +202,6 @@ ENTRY main {
 }
 
 TEST_F(BitcastConvertHloTest, FourPredToF32) {
-  if (test::DeviceTypeIs({test::kTpu})) {
-    GTEST_SKIP();
-  }
   absl::string_view hlo_string = R"(
 HloModule bitcast_to_smaller
 
@@ -225,9 +222,6 @@ ENTRY main {
   ROOT out = pred[10] bitcast-convert(p)
 }
 )";
-  if (test::DeviceTypeIs({test::kTpu})) {
-    GTEST_SKIP();
-  }
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{1e-5, 1e-5}));
 }
 
